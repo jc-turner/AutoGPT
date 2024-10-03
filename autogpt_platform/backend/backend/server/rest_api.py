@@ -7,6 +7,8 @@ from typing import Annotated, Any, Dict
 
 import uvicorn
 from autogpt_libs.auth.middleware import auth_middleware
+from autogpt_libs.supabase_integration_credentials_store.types import Credentials
+from autogpt_libs.utils.synchronize import KeyedMutex
 from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -20,8 +22,8 @@ from backend.data.credit import get_block_costs, get_user_credit_model
 from backend.data.queue import AsyncEventQueue, AsyncRedisEventQueue
 from backend.data.user import get_or_create_user
 from backend.executor import ExecutionManager, ExecutionScheduler
+from backend.server.integrations.creds_manager import IntegrationCredentialsManager
 from backend.server.model import CreateGraph, SetGraphActiveVersion
-from backend.util.lock import KeyedMutex
 from backend.util.service import AppService, expose, get_service_client
 from backend.util.settings import Config, Settings
 
@@ -84,15 +86,16 @@ class AgentServer(AppService):
         api_router.dependencies.append(Depends(auth_middleware))
 
         # Import & Attach sub-routers
+        import backend.server.integrations.router
         import backend.server.routers.analytics
-        import backend.server.routers.integrations
 
         api_router.include_router(
-            backend.server.routers.integrations.router,
+            backend.server.integrations.router.router,
             prefix="/integrations",
             tags=["integrations"],
             dependencies=[Depends(auth_middleware)],
         )
+        self.integration_creds_manager = IntegrationCredentialsManager()
 
         api_router.include_router(
             backend.server.routers.analytics.router,
@@ -661,3 +664,13 @@ class AgentServer(AppService):
             }
         except Exception as e:
             raise HTTPException(status_code=400, detail=str(e))
+
+    # -------- CREDENTIALS MANAGEMENT -------- #
+
+    @expose
+    def acquire_credentials(self, user_id: str, credentials_id: str) -> Credentials:
+        return self.integration_creds_manager.acquire(user_id, credentials_id)
+
+    @expose
+    def release_credentials(self, user_id: str, credentials_id: str) -> None:
+        return self.integration_creds_manager.release(user_id, credentials_id)
